@@ -1,0 +1,74 @@
+Firmware de la micro:bit (v1) para MakeCode en modo Python (Static Python).
+
+IMPORTANTE: este archivo NO se ejecuta con Python en el PC. Se copia en el
+editor https://makecode.microbit.org (cambiar a la vista "Python") y se
+descarga/flashea en la placa. Por eso usa objetos propios de MakeCode
+(``input``, ``serial``, ``basic``, ``Dimension``) que no existen en CPython.
+
+Qué hace
+--------
+Lee el acelerómetro integrado (ejes X, Y, Z) a 20 Hz y envía cada muestra por
+el puerto serie USB como una línea de texto CSV:
+
+    <t_ms>,<x>,<y>,<z>
+
+    t_ms : tiempo desde el arranque de la placa (ms), reloj de la micro:bit
+    x,y,z: aceleración en mili-g (MakeCode devuelve valores en el rango ±2048)
+
+El PC (``temblor_sensor.py``) lee estas líneas en un hilo aparte.
+
+Por qué se envía el tiempo en cada línea
+----------------------------------------
+El buffer USB introduce retardos variables ("jitter") en la recepción en el PC,
+así que el instante de llegada de cada línea NO sirve para calcular la
+frecuencia de muestreo. Con el timestamp de la propia placa, el PC obtiene una
+fs real (~20 Hz) y la FFT del temblor es fiable.
+
+Temporización sin deriva (drift-compensated)
+--------------------------------------------
+En vez de hacer ``pause(50)`` fijo (que acumularía el tiempo de ejecución de
+cada iteración y haría que la frecuencia real fuese < 20 Hz), se calcula el
+instante objetivo de cada muestra sumando siempre ``interval_ms`` al anterior
+y solo se espera lo que falta hasta ese instante.
+
+Uso recomendado
+---------------
+Colocar la micro:bit en una carcasa RÍGIDA sobre la mano en reposo (no la que
+hace la tarea). Una banda elástica introduce resonancias mecánicas que
+aparecen como picos falsos (~6 Hz).
+"""
+
+# Intervalo entre muestras: 50 ms = 20 Hz.
+# fs = 20 Hz -> frecuencia de Nyquist = 10 Hz, suficiente para el temblor
+# parkinsoniano (~4-6 Hz).
+interval_ms = 50  # 20 Hz
+
+# Instante (ms) en el que corresponde tomar la siguiente muestra.
+siguiente = input.running_time() + interval_ms
+
+
+def on_forever():
+    """Se ejecuta en bucle infinito: lee, envía y espera hasta la siguiente muestra."""
+    global siguiente
+
+    # 1) Leer el acelerómetro (mili-g) en los tres ejes.
+    x = input.acceleration(Dimension.X)
+    y = input.acceleration(Dimension.Y)
+    z = input.acceleration(Dimension.Z)
+
+    # 2) Marca de tiempo del reloj interno de la placa (ms desde el arranque).
+    t = input.running_time()
+
+    # 3) Enviar la línea CSV por serie. El "" + ... fuerza la conversión a texto.
+    serial.write_line("" + t + "," + x + "," + y + "," + z)
+
+    # 4) Esperar solo el tiempo que falta hasta la siguiente muestra
+    #    (compensa lo que haya tardado la lectura y el envío).
+    siguiente = siguiente + interval_ms
+    espera = siguiente - input.running_time()
+    if espera > 0:
+        basic.pause(espera)
+
+
+# Registra la función para que MakeCode la ejecute de forma continua.
+basic.forever(on_forever)
